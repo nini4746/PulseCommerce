@@ -1,0 +1,28 @@
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/pulse;AUTO_SERVER=TRUE
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  h2:
+    console:
+      enabled: true
+
+server:
+  port: 8080
+
+logging:
+  pattern:
+    console: '{"ts":"%d{ISO8601}","level":"%level","logger":"%logger","requestId":"%X{requestId:-}","msg":"%message"}%n'
+
+pulse:
+  jwt:
+    secret: ${JWT_SECRET:dev-secret-please-change-this-key-1234567890}
+    ttl-ms: 3600000
+  admin:
+    email: admin@pulse.local
+    password: admin12345
