@@ -265,6 +265,7 @@ class MarketplaceFlowTests {
         assertEquals(1, tail.get("content").size());
     }
 
+
     @Test
     void other_buyer_cannot_cancel() throws Exception {
         String seller = signupAndLogin("seller7@x.com", "passpass1", "SELLER");

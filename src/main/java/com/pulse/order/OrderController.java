@@ -4,9 +4,12 @@ import com.pulse.domain.Order;
 import com.pulse.domain.OrderStatus;
 import com.pulse.domain.Product;
 import com.pulse.domain.Role;
+import com.pulse.event.OrderCancelledEvent;
+import com.pulse.event.OrderPlacedEvent;
 import com.pulse.repo.OrderRepository;
 import com.pulse.repo.ProductRepository;
 import com.pulse.security.AuthPrincipal;
+import org.springframework.context.ApplicationEventPublisher;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import org.slf4j.Logger;
@@ -34,10 +37,13 @@ public class OrderController {
 
     private final OrderRepository orders;
     private final ProductRepository products;
+    private final ApplicationEventPublisher events;
 
-    public OrderController(OrderRepository orders, ProductRepository products) {
+    public OrderController(OrderRepository orders, ProductRepository products,
+                           ApplicationEventPublisher events) {
         this.orders = orders;
         this.products = products;
+        this.events = events;
     }
 
     public record PlaceRequest(@Min(1) Long productId, @Min(1) int quantity) {}
@@ -66,6 +72,8 @@ public class OrderController {
         Order saved = orders.save(new Order(me.userId(), p.getId(), req.quantity(), p.getPriceCents()));
         audit.info("order.placed buyerId={} productId={} qty={} orderId={}",
                 me.userId(), p.getId(), req.quantity(), saved.getId());
+        events.publishEvent(new OrderPlacedEvent(saved.getId(), me.userId(), p.getId(),
+                req.quantity(), saved.totalCents(), Instant.now()));
         return ResponseEntity.status(HttpStatus.CREATED).body(OrderView.of(saved));
     }
 
@@ -100,6 +108,8 @@ public class OrderController {
         products.findById(o.getProductId()).ifPresent(p -> p.restock(o.getQuantity()));
         audit.info("order.cancelled buyerId={} orderId={} productId={} qty={}",
                 me.userId(), o.getId(), o.getProductId(), o.getQuantity());
+        events.publishEvent(new OrderCancelledEvent(o.getId(), me.userId(), o.getProductId(),
+                o.getQuantity(), Instant.now()));
         return OrderView.of(o);
     }
 }
