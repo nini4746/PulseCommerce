@@ -4,6 +4,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -17,6 +19,8 @@ import java.util.UUID;
 
 @Component
 public class JwtFilter extends OncePerRequestFilter {
+
+    private static final Logger log = LoggerFactory.getLogger(JwtFilter.class);
 
     private final JwtService jwt;
 
@@ -34,14 +38,16 @@ public class JwtFilter extends OncePerRequestFilter {
 
         String header = req.getHeader("Authorization");
         if (header != null && header.startsWith("Bearer ")) {
+            String token = header.substring(7);
             try {
-                AuthPrincipal p = jwt.parse(header.substring(7));
+                AuthPrincipal p = jwt.parse(token);
                 var auth = new UsernamePasswordAuthenticationToken(
                         p, null, List.of(new SimpleGrantedAuthority("ROLE_" + p.role().name()))
                 );
                 SecurityContextHolder.getContext().setAuthentication(auth);
-            } catch (Exception ignored) {
-                // invalid token → unauthenticated request
+            } catch (Exception e) {
+                log.warn("invalid JWT path={} tokenPrefix={} reason={}",
+                        req.getRequestURI(), preview(token), e.getClass().getSimpleName());
             }
         }
 
@@ -50,5 +56,10 @@ public class JwtFilter extends OncePerRequestFilter {
         } finally {
             MDC.remove("requestId");
         }
+    }
+
+    private static String preview(String token) {
+        if (token.length() <= 8) return "***";
+        return token.substring(0, 8) + "...";
     }
 }

@@ -21,6 +21,10 @@ public class Product {
     @Column(nullable = false)
     private Long sellerId;
 
+    @Version
+    @Column(nullable = false)
+    private long version;
+
     protected Product() {}
 
     public Product(String name, long priceCents, int stock, Long sellerId) {

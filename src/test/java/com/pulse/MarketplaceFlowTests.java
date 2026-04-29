@@ -15,6 +15,12 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -24,7 +30,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @DirtiesContext(classMode = ClassMode.BEFORE_EACH_TEST_METHOD)
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:pulse_${random.uuid};DB_CLOSE_DELAY=-1",
-        "spring.jpa.hibernate.ddl-auto=create-drop"
+        "spring.jpa.hibernate.ddl-auto=create-drop",
+        "pulse.jwt.secret=test-secret-test-secret-test-secret-1234567890",
+        "pulse.admin.password=admin12345"
 })
 class MarketplaceFlowTests {
 
@@ -188,6 +196,44 @@ class MarketplaceFlowTests {
                         .getResponse().getContentAsString())
                 .get("stock").asLong();
         assertEquals(3, stockAfter);
+    }
+
+    @Test
+    void concurrent_orders_do_not_oversell() throws Exception {
+        String seller = signupAndLogin("seller_c@x.com", "passpass1", "SELLER");
+        String buyer1 = signupAndLogin("buyer_c1@x.com", "passpass1", "BUYER");
+        String buyer2 = signupAndLogin("buyer_c2@x.com", "passpass1", "BUYER");
+        long pid = createProduct(seller, "Scarce", 100, 1);
+
+        Callable<Integer> placeOrder = () -> mvc.perform(post("/orders")
+                .header("Authorization", "Bearer " + buyer1)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"productId\":" + pid + ",\"quantity\":1}"))
+                .andReturn().getResponse().getStatus();
+        Callable<Integer> placeOrder2 = () -> mvc.perform(post("/orders")
+                .header("Authorization", "Bearer " + buyer2)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"productId\":" + pid + ",\"quantity\":1}"))
+                .andReturn().getResponse().getStatus();
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Integer>> results = pool.invokeAll(List.of(placeOrder, placeOrder2));
+            int s1 = results.get(0).get();
+            int s2 = results.get(1).get();
+            // exactly one succeeds (201), the other fails with 409 (insufficient stock or optimistic lock)
+            int created = (s1 == 201 ? 1 : 0) + (s2 == 201 ? 1 : 0);
+            int conflict = (s1 == 409 ? 1 : 0) + (s2 == 409 ? 1 : 0);
+            assertEquals(1, created, "expected exactly one CREATED, got s1=" + s1 + " s2=" + s2);
+            assertEquals(1, conflict, "expected exactly one CONFLICT, got s1=" + s1 + " s2=" + s2);
+        } finally {
+            pool.shutdown();
+        }
+
+        long stockAfter = om.readTree(mvc.perform(get("/products/" + pid)).andReturn()
+                        .getResponse().getContentAsString())
+                .get("stock").asLong();
+        assertEquals(0, stockAfter);
     }
 
     @Test

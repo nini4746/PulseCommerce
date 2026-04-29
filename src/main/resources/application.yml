@@ -6,14 +6,14 @@ spring:
     driver-class-name: org.h2.Driver
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: ${PULSE_DDL_AUTO:none}
     open-in-view: false
   h2:
     console:
-      enabled: true
+      enabled: ${H2_CONSOLE_ENABLED:false}
 
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
 
 logging:
   pattern:
@@ -21,8 +21,8 @@ logging:
 
 pulse:
   jwt:
-    secret: ${JWT_SECRET:dev-secret-please-change-this-key-1234567890}
-    ttl-ms: 3600000
+    secret: ${JWT_SECRET:}
+    ttl-ms: ${JWT_TTL_MS:3600000}
   admin:
-    email: admin@pulse.local
-    password: admin12345
+    email: ${ADMIN_EMAIL:admin@pulse.local}
+    password: ${ADMIN_PASSWORD:}

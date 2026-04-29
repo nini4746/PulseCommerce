@@ -30,6 +30,10 @@ public class Order {
     @Column(nullable = false)
     private Instant createdAt;
 
+    @Version
+    @Column(nullable = false)
+    private long version;
+
     protected Order() {}
 
     public Order(Long buyerId, Long productId, int quantity, long unitPriceCents) {

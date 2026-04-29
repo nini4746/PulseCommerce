@@ -53,11 +53,7 @@ public class OrderController {
         if (p.getSellerId().equals(me.userId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "cannot order your own product");
         }
-        try {
-            p.decrementStock(req.quantity());
-        } catch (IllegalStateException e) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
-        }
+        p.decrementStock(req.quantity());
         Order saved = orders.save(new Order(me.userId(), p.getId(), req.quantity(), p.getPriceCents()));
         return ResponseEntity.status(HttpStatus.CREATED).body(OrderView.of(saved));
     }
@@ -77,11 +73,7 @@ public class OrderController {
         if (!o.getBuyerId().equals(me.userId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "not your order");
         }
-        try {
-            o.cancel();
-        } catch (IllegalStateException e) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
-        }
+        o.cancel();
         products.findById(o.getProductId()).ifPresent(p -> p.restock(o.getQuantity()));
         return OrderView.of(o);
     }

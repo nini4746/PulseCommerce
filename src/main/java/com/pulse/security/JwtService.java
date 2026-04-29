@@ -16,12 +16,23 @@ import java.util.Date;
 @Service
 public class JwtService {
 
+    private static final int MIN_SECRET_BYTES = 32;
+
     private final SecretKey key;
     private final long ttlMillis;
 
-    public JwtService(@Value("${pulse.jwt.secret:dev-secret-please-change-this-key-1234567890}") String secret,
+    public JwtService(@Value("${pulse.jwt.secret:}") String secret,
                       @Value("${pulse.jwt.ttl-ms:3600000}") long ttlMillis) {
-        this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException(
+                    "pulse.jwt.secret (JWT_SECRET) is not set; refusing to start without an explicit JWT secret");
+        }
+        byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length < MIN_SECRET_BYTES) {
+            throw new IllegalStateException(
+                    "pulse.jwt.secret must be at least " + MIN_SECRET_BYTES + " bytes; got " + bytes.length);
+        }
+        this.key = Keys.hmacShaKeyFor(bytes);
         this.ttlMillis = ttlMillis;
     }
 

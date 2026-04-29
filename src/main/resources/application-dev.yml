@@ -1,0 +1,7 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: ${PULSE_DDL_AUTO:update}
+  h2:
+    console:
+      enabled: true
