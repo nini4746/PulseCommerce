@@ -9,6 +9,11 @@ import com.pulse.repo.ProductRepository;
 import com.pulse.security.AuthPrincipal;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -18,10 +23,14 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/orders")
 public class OrderController {
+
+    private static final Logger audit = LoggerFactory.getLogger("audit." + OrderController.class.getName());
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final OrderRepository orders;
     private final ProductRepository products;
@@ -55,13 +64,27 @@ public class OrderController {
         }
         p.decrementStock(req.quantity());
         Order saved = orders.save(new Order(me.userId(), p.getId(), req.quantity(), p.getPriceCents()));
+        audit.info("order.placed buyerId={} productId={} qty={} orderId={}",
+                me.userId(), p.getId(), req.quantity(), saved.getId());
         return ResponseEntity.status(HttpStatus.CREATED).body(OrderView.of(saved));
     }
 
     @GetMapping("/me")
-    public List<OrderView> mine(@AuthenticationPrincipal AuthPrincipal me) {
+    public Map<String, Object> mine(@AuthenticationPrincipal AuthPrincipal me,
+                                    @RequestParam(name = "page", defaultValue = "0") int page,
+                                    @RequestParam(name = "size", defaultValue = "20") int size) {
         if (me == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
-        return orders.findByBuyerIdOrderByCreatedAtDesc(me.userId()).stream().map(OrderView::of).toList();
+        if (page < 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "page must be >= 0");
+        int boundedSize = Math.max(1, Math.min(size, MAX_PAGE_SIZE));
+        Page<Order> pageData = orders.findByBuyerIdOrderByCreatedAtDesc(
+                me.userId(), PageRequest.of(page, boundedSize, Sort.by(Sort.Direction.DESC, "createdAt")));
+        return Map.of(
+                "page", pageData.getNumber(),
+                "size", pageData.getSize(),
+                "totalElements", pageData.getTotalElements(),
+                "totalPages", pageData.getTotalPages(),
+                "content", pageData.getContent().stream().map(OrderView::of).toList()
+        );
     }
 
     @PostMapping("/{id}/cancel")
@@ -75,6 +98,8 @@ public class OrderController {
         }
         o.cancel();
         products.findById(o.getProductId()).ifPresent(p -> p.restock(o.getQuantity()));
+        audit.info("order.cancelled buyerId={} orderId={} productId={} qty={}",
+                me.userId(), o.getId(), o.getProductId(), o.getQuantity());
         return OrderView.of(o);
     }
 }

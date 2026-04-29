@@ -237,6 +237,35 @@ class MarketplaceFlowTests {
     }
 
     @Test
+    void mine_paginates_orders() throws Exception {
+        String seller = signupAndLogin("sellerP@x.com", "passpass1", "SELLER");
+        String buyer = signupAndLogin("buyerP@x.com", "passpass1", "BUYER");
+        long pid = createProduct(seller, "Snack", 50, 10);
+        for (int i = 0; i < 5; i++) {
+            mvc.perform(post("/orders")
+                            .header("Authorization", "Bearer " + buyer)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"productId\":" + pid + ",\"quantity\":1}"))
+                    .andExpect(status().isCreated());
+        }
+        MvcResult page0 = mvc.perform(get("/orders/me?page=0&size=2")
+                        .header("Authorization", "Bearer " + buyer))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode body = om.readTree(page0.getResponse().getContentAsString());
+        assertEquals(0, body.get("page").asInt());
+        assertEquals(2, body.get("size").asInt());
+        assertEquals(5, body.get("totalElements").asLong());
+        assertEquals(3, body.get("totalPages").asInt());
+        assertEquals(2, body.get("content").size());
+
+        MvcResult page2 = mvc.perform(get("/orders/me?page=2&size=2")
+                        .header("Authorization", "Bearer " + buyer))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode tail = om.readTree(page2.getResponse().getContentAsString());
+        assertEquals(1, tail.get("content").size());
+    }
+
+    @Test
     void other_buyer_cannot_cancel() throws Exception {
         String seller = signupAndLogin("seller7@x.com", "passpass1", "SELLER");
         String buyer1 = signupAndLogin("buyer7a@x.com", "passpass1", "BUYER");
