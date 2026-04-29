@@ -57,7 +57,7 @@ public class Order {
 
     public void cancel() {
         if (status != OrderStatus.PLACED) {
-            throw new IllegalStateException("only PLACED orders can be cancelled");
+            throw new IllegalOrderStateException("only PLACED orders can be cancelled");
         }
         this.status = OrderStatus.CANCELLED;
     }

@@ -42,7 +42,7 @@ public class Product {
 
     public void decrementStock(int qty) {
         if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
-        if (stock < qty) throw new IllegalStateException("insufficient stock");
+        if (stock < qty) throw new InsufficientStockException("insufficient stock");
         this.stock -= qty;
     }
 
