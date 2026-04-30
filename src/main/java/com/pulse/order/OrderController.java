@@ -149,4 +149,56 @@ public class OrderController {
                 o.getQuantity(), Instant.now()));
         return OrderView.of(o);
     }
+
+    @PostMapping("/{id}/pay")
+    @Transactional
+    public OrderView pay(@AuthenticationPrincipal AuthPrincipal me, @PathVariable Long id) {
+        if (me == null || me.role() != Role.BUYER) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "buyer role required");
+        }
+        Order o = orders.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "order not found"));
+        if (!o.getBuyerId().equals(me.userId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "not your order");
+        }
+        o.markPaid();
+        audit.info("order.paid buyerId={} orderId={}", me.userId(), o.getId());
+        return OrderView.of(o);
+    }
+
+    @PostMapping("/{id}/ship")
+    @Transactional
+    public OrderView ship(@AuthenticationPrincipal AuthPrincipal me, @PathVariable Long id) {
+        if (me == null || me.role() != Role.SELLER) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "seller role required");
+        }
+        Order o = orders.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "order not found"));
+        Product p = products.findById(o.getProductId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "product not found"));
+        if (!p.getSellerId().equals(me.userId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "not your product");
+        }
+        o.markShipped();
+        audit.info("order.shipped sellerId={} orderId={}", me.userId(), o.getId());
+        return OrderView.of(o);
+    }
+
+    @PostMapping("/{id}/deliver")
+    @Transactional
+    public OrderView deliver(@AuthenticationPrincipal AuthPrincipal me, @PathVariable Long id) {
+        if (me == null || me.role() != Role.SELLER) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "seller role required");
+        }
+        Order o = orders.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "order not found"));
+        Product p = products.findById(o.getProductId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "product not found"));
+        if (!p.getSellerId().equals(me.userId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "not your product");
+        }
+        o.markDelivered();
+        audit.info("order.delivered sellerId={} orderId={}", me.userId(), o.getId());
+        return OrderView.of(o);
+    }
 }

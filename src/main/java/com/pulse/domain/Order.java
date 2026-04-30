@@ -68,9 +68,30 @@ public class Order {
     public long totalCents() { return unitPriceCents * quantity; }
 
     public void cancel() {
-        if (status != OrderStatus.PLACED) {
-            throw new IllegalOrderStateException("only PLACED orders can be cancelled");
+        if (status != OrderStatus.PLACED && status != OrderStatus.PAID) {
+            throw new IllegalOrderStateException("only PLACED or PAID orders can be cancelled");
         }
         this.status = OrderStatus.CANCELLED;
+    }
+
+    public void markPaid() {
+        if (status != OrderStatus.PLACED) {
+            throw new IllegalOrderStateException("only PLACED orders can be paid");
+        }
+        this.status = OrderStatus.PAID;
+    }
+
+    public void markShipped() {
+        if (status != OrderStatus.PAID) {
+            throw new IllegalOrderStateException("only PAID orders can be shipped");
+        }
+        this.status = OrderStatus.SHIPPED;
+    }
+
+    public void markDelivered() {
+        if (status != OrderStatus.SHIPPED) {
+            throw new IllegalOrderStateException("only SHIPPED orders can be delivered");
+        }
+        this.status = OrderStatus.DELIVERED;
     }
 }

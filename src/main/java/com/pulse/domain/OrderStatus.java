@@ -1,5 +1,5 @@
 package com.pulse.domain;
 
 public enum OrderStatus {
-    PLACED, CANCELLED
+    PLACED, PAID, SHIPPED, DELIVERED, CANCELLED
 }

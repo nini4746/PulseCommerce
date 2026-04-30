@@ -397,6 +397,51 @@ class MarketplaceFlowTests {
     }
 
     @Test
+    void order_state_machine_pay_ship_deliver() throws Exception {
+        String seller = signupAndLogin("sellerSM@x.com", "passpass1", "SELLER");
+        String buyer = signupAndLogin("buyerSM@x.com", "passpass1", "BUYER");
+        long pid = createProduct(seller, "SM", 100, 5);
+        long oid = om.readTree(mvc.perform(post("/orders")
+                                .header("Authorization", "Bearer " + buyer)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"productId\":" + pid + ",\"quantity\":1}"))
+                        .andExpect(status().isCreated()).andReturn()
+                        .getResponse().getContentAsString())
+                .get("id").asLong();
+
+        mvc.perform(post("/orders/" + oid + "/ship").header("Authorization", "Bearer " + seller))
+                .andExpect(status().isConflict());
+
+        mvc.perform(post("/orders/" + oid + "/pay").header("Authorization", "Bearer " + buyer))
+                .andExpect(status().isOk());
+        mvc.perform(post("/orders/" + oid + "/ship").header("Authorization", "Bearer " + seller))
+                .andExpect(status().isOk());
+        mvc.perform(post("/orders/" + oid + "/deliver").header("Authorization", "Bearer " + seller))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/orders/" + oid + "/cancel").header("Authorization", "Bearer " + buyer))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void other_seller_cannot_ship() throws Exception {
+        String s1 = signupAndLogin("ssh1@x.com", "passpass1", "SELLER");
+        String s2 = signupAndLogin("ssh2@x.com", "passpass1", "SELLER");
+        String buyer = signupAndLogin("bsh@x.com", "passpass1", "BUYER");
+        long pid = createProduct(s1, "X", 100, 1);
+        long oid = om.readTree(mvc.perform(post("/orders")
+                                .header("Authorization", "Bearer " + buyer)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"productId\":" + pid + ",\"quantity\":1}"))
+                        .andReturn().getResponse().getContentAsString())
+                .get("id").asLong();
+        mvc.perform(post("/orders/" + oid + "/pay").header("Authorization", "Bearer " + buyer))
+                .andExpect(status().isOk());
+        mvc.perform(post("/orders/" + oid + "/ship").header("Authorization", "Bearer " + s2))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void other_buyer_cannot_cancel() throws Exception {
         String seller = signupAndLogin("seller7@x.com", "passpass1", "SELLER");
         String buyer1 = signupAndLogin("buyer7a@x.com", "passpass1", "BUYER");
