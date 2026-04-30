@@ -11,9 +11,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,12 +35,22 @@ public class SellerController {
     }
 
     @GetMapping("/kpi")
-    public Map<String, Object> kpi(@AuthenticationPrincipal AuthPrincipal me) {
+    public Map<String, Object> kpi(@AuthenticationPrincipal AuthPrincipal me,
+                                   @RequestParam(name = "from", required = false) String fromStr,
+                                   @RequestParam(name = "to", required = false) String toStr) {
         if (me == null || me.role() != Role.SELLER) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "seller role required");
         }
+        Instant now = Instant.now();
+        Instant to = parseInstant(toStr, "to", now);
+        Instant from = parseInstant(fromStr, "from", to.minus(30, ChronoUnit.DAYS));
+        if (!from.isBefore(to)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "from must be before to");
+        }
         List<Long> productIds = products.findBySellerId(me.userId()).stream().map(Product::getId).toList();
         Map<String, Object> body = new LinkedHashMap<>();
+        body.put("from", from.toString());
+        body.put("to", to.toString());
         if (productIds.isEmpty()) {
             body.put("orderCount", 0L);
             body.put("cancelledCount", 0L);
@@ -44,7 +58,12 @@ public class SellerController {
             body.put("cancelRate", 0.0);
             return body;
         }
-        List<Order> ordersForSeller = orders.findByProductIdIn(productIds);
+        List<Order> ordersForSeller = orders.findByProductIdIn(productIds).stream()
+                .filter(o -> {
+                    Instant t = o.getCreatedAt();
+                    return !t.isBefore(from) && t.isBefore(to);
+                })
+                .toList();
         long total = ordersForSeller.size();
         long cancelled = ordersForSeller.stream().filter(o -> o.getStatus() == OrderStatus.CANCELLED).count();
         long gmvCents = ordersForSeller.stream()
@@ -57,5 +76,15 @@ public class SellerController {
         body.put("gmvCents", gmvCents);
         body.put("cancelRate", Math.round(cancelRate * 10000.0) / 10000.0);
         return body;
+    }
+
+    private static Instant parseInstant(String s, String field, Instant fallback) {
+        if (s == null || s.isBlank()) return fallback;
+        try {
+            return Instant.parse(s);
+        } catch (DateTimeParseException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "invalid ISO-8601 instant for '" + field + "': " + s);
+        }
     }
 }

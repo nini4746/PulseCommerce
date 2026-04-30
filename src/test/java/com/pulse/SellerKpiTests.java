@@ -125,4 +125,40 @@ class SellerKpiTests {
         assertEquals(0L, body.get("gmvCents").asLong());
         assertEquals(0.0, body.get("cancelRate").asDouble());
     }
+
+    @Test
+    void kpi_window_filter_excludes_orders_outside_range() throws Exception {
+        String seller = signupAndLogin("swin@x.com", "SELLER");
+        String buyer = signupAndLogin("bwin@x.com", "BUYER");
+        long pid = createProduct(seller, "PW", 1000, 10);
+        placeOrder(buyer, pid, 1);
+        placeOrder(buyer, pid, 2);
+
+        // Future window: no orders should match
+        String farFuture = "2099-01-01T00:00:00Z";
+        String farFutureEnd = "2099-12-31T00:00:00Z";
+        MvcResult r = mvc.perform(get("/seller/kpi")
+                .param("from", farFuture).param("to", farFutureEnd)
+                .header("Authorization", "Bearer " + seller))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode body = om.readTree(r.getResponse().getContentAsString());
+        assertEquals(0L, body.get("orderCount").asLong());
+        assertEquals(0L, body.get("gmvCents").asLong());
+        assertEquals(farFuture, body.get("from").asText());
+        assertEquals(farFutureEnd, body.get("to").asText());
+
+        // Default window (last 30d) — both orders in
+        MvcResult r2 = mvc.perform(get("/seller/kpi").header("Authorization", "Bearer " + seller))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode b2 = om.readTree(r2.getResponse().getContentAsString());
+        assertEquals(2L, b2.get("orderCount").asLong());
+    }
+
+    @Test
+    void kpi_invalid_date_format_returns_400() throws Exception {
+        String seller = signupAndLogin("sbad@x.com", "SELLER");
+        mvc.perform(get("/seller/kpi").param("from", "not-a-date")
+                .header("Authorization", "Bearer " + seller))
+                .andExpect(status().isBadRequest());
+    }
 }
