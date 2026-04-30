@@ -38,3 +38,7 @@ pulse:
   admin:
     email: ${ADMIN_EMAIL:admin@pulse.local}
     password: ${ADMIN_PASSWORD:}
+  ratelimit:
+    login:
+      capacity: ${LOGIN_RL_CAPACITY:10}
+      refill-per-minute: ${LOGIN_RL_REFILL:10}

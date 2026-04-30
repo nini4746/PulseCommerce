@@ -32,7 +32,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.datasource.url=jdbc:h2:mem:pulse_evt_${random.uuid};DB_CLOSE_DELAY=-1",
         "spring.jpa.hibernate.ddl-auto=create-drop",
         "pulse.jwt.secret=test-secret-test-secret-test-secret-1234567890",
-        "pulse.admin.password=admin12345"
+        "pulse.admin.password=admin12345",
+        "pulse.ratelimit.login.capacity=1000",
+        "pulse.ratelimit.login.refill-per-minute=1000"
 })
 class OrderEventTests {
 
