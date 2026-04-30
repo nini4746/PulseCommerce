@@ -3,6 +3,7 @@ package com.pulse.order;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pulse.domain.CancelReason;
+import com.pulse.domain.DisputeMessage;
 import com.pulse.domain.Order;
 import com.pulse.domain.OrderStatus;
 import com.pulse.domain.Product;
@@ -11,6 +12,7 @@ import com.pulse.domain.RefundStatus;
 import com.pulse.domain.Role;
 import com.pulse.event.OrderCancelledEvent;
 import com.pulse.event.OrderPlacedEvent;
+import com.pulse.repo.DisputeMessageRepository;
 import com.pulse.repo.OrderRepository;
 import com.pulse.repo.ProductRepository;
 import com.pulse.repo.RefundIdempotencyRepository;
@@ -46,16 +48,19 @@ public class OrderController {
     private final ProductRepository products;
     private final ApplicationEventPublisher events;
     private final RefundIdempotencyRepository refundIdem;
+    private final DisputeMessageRepository disputes;
     private final ObjectMapper json;
 
     public OrderController(OrderRepository orders, ProductRepository products,
                            ApplicationEventPublisher events,
                            RefundIdempotencyRepository refundIdem,
+                           DisputeMessageRepository disputes,
                            ObjectMapper json) {
         this.orders = orders;
         this.products = products;
         this.events = events;
         this.refundIdem = refundIdem;
+        this.disputes = disputes;
         this.json = json;
     }
 
@@ -64,6 +69,16 @@ public class OrderController {
     public record CancelRequest(String reason, String note) {}
 
     public record RefundRequest(String action) {}
+
+    public record DisputeMessageRequest(String body) {}
+
+    public record DisputeMessageView(Long id, Long orderId, Long senderId, Role senderRole,
+                                     String body, Instant createdAt) {
+        static DisputeMessageView of(DisputeMessage m) {
+            return new DisputeMessageView(m.getId(), m.getOrderId(), m.getSenderId(),
+                    m.getSenderRole(), m.getBody(), m.getCreatedAt());
+        }
+    }
 
     public record OrderView(Long id, Long buyerId, Long productId, int quantity,
                             long unitPriceCents, long totalCents, OrderStatus status,
@@ -287,6 +302,54 @@ public class OrderController {
         o.markDelivered();
         audit.info("order.delivered sellerId={} orderId={}", me.userId(), o.getId());
         return OrderView.of(o);
+    }
+
+    @GetMapping("/{id}/dispute/messages")
+    public List<DisputeMessageView> listDisputeMessages(@AuthenticationPrincipal AuthPrincipal me,
+                                                       @PathVariable Long id) {
+        if (me == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+        Order o = orders.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "order not found"));
+        ensureDisputeAccess(me, o);
+        return disputes.findByOrderIdOrderByCreatedAtAsc(id).stream()
+                .map(DisputeMessageView::of).toList();
+    }
+
+    @PostMapping("/{id}/dispute/messages")
+    @Transactional
+    public ResponseEntity<DisputeMessageView> postDisputeMessage(@AuthenticationPrincipal AuthPrincipal me,
+                                                                 @PathVariable Long id,
+                                                                 @RequestBody(required = false) DisputeMessageRequest req) {
+        if (me == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+        Order o = orders.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "order not found"));
+        // Admin can read but not post (read-only oversight)
+        if (me.role() == Role.ADMIN) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "admin can read but not post dispute messages");
+        }
+        ensureDisputeAccess(me, o);
+        String body = req == null ? null : req.body();
+        if (body == null || body.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "body required");
+        }
+        if (body.length() > 2000) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "body too long (max 2000)");
+        }
+        DisputeMessage saved = disputes.save(new DisputeMessage(id, me.userId(), me.role(), body));
+        audit.info("dispute.message.posted orderId={} senderId={} role={} msgId={}",
+                id, me.userId(), me.role(), saved.getId());
+        return ResponseEntity.status(HttpStatus.CREATED).body(DisputeMessageView.of(saved));
+    }
+
+    private void ensureDisputeAccess(AuthPrincipal me, Order o) {
+        if (me.role() == Role.ADMIN) return;
+        if (me.role() == Role.BUYER && o.getBuyerId().equals(me.userId())) return;
+        if (me.role() == Role.SELLER) {
+            Product p = products.findById(o.getProductId())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "product not found"));
+            if (p.getSellerId().equals(me.userId())) return;
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "not a participant of this order");
     }
 
     private static CancelReason parseReason(String s) {
