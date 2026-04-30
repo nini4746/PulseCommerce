@@ -74,15 +74,17 @@ class RefreshTokenTests {
         String r2 = rotated.get("refreshToken").asText();
         assertNotEquals(r1, r2);
 
-        // old token must now be unusable
-        mvc.perform(post("/auth/refresh").contentType(MediaType.APPLICATION_JSON)
-                .content("{\"refreshToken\":\"" + r1 + "\"}"))
-                .andExpect(status().isUnauthorized());
+        // r2 (the freshly issued token) is usable
+        MvcResult res2 = mvc.perform(post("/auth/refresh").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"refreshToken\":\"" + r2 + "\"}"))
+                .andExpect(status().isOk()).andReturn();
+        String r3 = om.readTree(res2.getResponse().getContentAsString()).get("refreshToken").asText();
+        assertNotEquals(r2, r3);
 
-        // new token works
+        // r2 now revoked: replaying it must fail (and triggers theft handling)
         mvc.perform(post("/auth/refresh").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"refreshToken\":\"" + r2 + "\"}"))
-                .andExpect(status().isOk());
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -109,6 +111,28 @@ class RefreshTokenTests {
     @Test
     void logout_without_auth_returns_401() throws Exception {
         mvc.perform(post("/auth/logout"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void reuse_of_old_refresh_token_revokes_entire_chain() throws Exception {
+        JsonNode body = signupAndLogin("rt_theft@x.com");
+        String r1 = body.get("refreshToken").asText();
+
+        // Rotate once: r1 -> r2 (r1 now revoked but not expired)
+        MvcResult res = mvc.perform(post("/auth/refresh").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"refreshToken\":\"" + r1 + "\"}"))
+                .andExpect(status().isOk()).andReturn();
+        String r2 = om.readTree(res.getResponse().getContentAsString()).get("refreshToken").asText();
+
+        // Attacker (or stale client) replays r1 — theft detection triggers
+        mvc.perform(post("/auth/refresh").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"refreshToken\":\"" + r1 + "\"}"))
+                .andExpect(status().isUnauthorized());
+
+        // r2 (the legitimate current token) must now ALSO be invalidated
+        mvc.perform(post("/auth/refresh").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"refreshToken\":\"" + r2 + "\"}"))
                 .andExpect(status().isUnauthorized());
     }
 }

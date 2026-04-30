@@ -2,6 +2,8 @@ package com.pulse.security;
 
 import com.pulse.domain.RefreshToken;
 import com.pulse.repo.RefreshTokenRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,6 +26,7 @@ public class RefreshTokenService {
 
     private static final SecureRandom RNG = new SecureRandom();
     private static final Base64.Encoder URL = Base64.getUrlEncoder().withoutPadding();
+    private static final Logger audit = LoggerFactory.getLogger("audit." + RefreshTokenService.class.getName());
 
     private final RefreshTokenRepository repo;
     private final long ttlMillis;
@@ -50,7 +53,17 @@ public class RefreshTokenService {
         Optional<RefreshToken> opt = repo.findByTokenHash(hash);
         if (opt.isEmpty()) return Optional.empty();
         RefreshToken rt = opt.get();
-        if (!rt.isUsable(Instant.now())) return Optional.empty();
+        Instant now = Instant.now();
+        // Token theft detection: a previously-revoked but not-yet-expired token
+        // being presented means the rotated chain leaked. Revoke the entire
+        // chain for the user and refuse this request.
+        if (rt.isRevoked() && rt.getExpiresAt().isAfter(now)) {
+            int killed = repo.revokeAllForUser(rt.getUserId());
+            audit.warn("refresh.theft_detected userId={} killedTokens={} tokenId={}",
+                    rt.getUserId(), killed, rt.getId());
+            return Optional.empty();
+        }
+        if (!rt.isUsable(now)) return Optional.empty();
         rt.revoke();
         return Optional.of(rt);
     }
