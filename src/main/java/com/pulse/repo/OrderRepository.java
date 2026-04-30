@@ -10,4 +10,6 @@ import java.util.List;
 public interface OrderRepository extends JpaRepository<Order, Long> {
     List<Order> findByBuyerIdOrderByCreatedAtDesc(Long buyerId);
     Page<Order> findByBuyerIdOrderByCreatedAtDesc(Long buyerId, Pageable pageable);
+    Page<Order> findByProductIdInOrderByCreatedAtDesc(java.util.Collection<Long> productIds, Pageable pageable);
+    java.util.Optional<Order> findByBuyerIdAndIdempotencyKey(Long buyerId, String idempotencyKey);
 }

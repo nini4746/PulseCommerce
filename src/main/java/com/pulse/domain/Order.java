@@ -5,7 +5,9 @@ import jakarta.persistence.*;
 import java.time.Instant;
 
 @Entity
-@Table(name = "orders")
+@Table(name = "orders", uniqueConstraints = {
+        @UniqueConstraint(name = "uk_orders_buyer_idem", columnNames = {"buyerId", "idempotencyKey"})
+})
 public class Order {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -30,6 +32,9 @@ public class Order {
     @Column(nullable = false)
     private Instant createdAt;
 
+    @Column(length = 64)
+    private String idempotencyKey;
+
     @Version
     @Column(nullable = false)
     private long version;
@@ -37,13 +42,20 @@ public class Order {
     protected Order() {}
 
     public Order(Long buyerId, Long productId, int quantity, long unitPriceCents) {
+        this(buyerId, productId, quantity, unitPriceCents, null);
+    }
+
+    public Order(Long buyerId, Long productId, int quantity, long unitPriceCents, String idempotencyKey) {
         this.buyerId = buyerId;
         this.productId = productId;
         this.quantity = quantity;
         this.unitPriceCents = unitPriceCents;
         this.status = OrderStatus.PLACED;
         this.createdAt = Instant.now();
+        this.idempotencyKey = idempotencyKey;
     }
+
+    public String getIdempotencyKey() { return idempotencyKey; }
 
     public Long getId() { return id; }
     public Long getBuyerId() { return buyerId; }

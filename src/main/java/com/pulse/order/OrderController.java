@@ -9,6 +9,7 @@ import com.pulse.event.OrderPlacedEvent;
 import com.pulse.repo.OrderRepository;
 import com.pulse.repo.ProductRepository;
 import com.pulse.security.AuthPrincipal;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.context.ApplicationEventPublisher;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -59,9 +60,19 @@ public class OrderController {
     @PostMapping
     @Transactional
     public ResponseEntity<OrderView> place(@AuthenticationPrincipal AuthPrincipal me,
+                                           @RequestHeader(name = "Idempotency-Key", required = false) String idemKey,
                                            @Valid @RequestBody PlaceRequest req) {
         if (me == null || me.role() != Role.BUYER) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "buyer role required");
+        }
+        if (idemKey != null && !idemKey.isBlank()) {
+            if (idemKey.length() > 64) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key too long (max 64)");
+            }
+            var existing = orders.findByBuyerIdAndIdempotencyKey(me.userId(), idemKey);
+            if (existing.isPresent()) {
+                return ResponseEntity.status(HttpStatus.OK).body(OrderView.of(existing.get()));
+            }
         }
         Product p = products.findById(req.productId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "product not found"));
@@ -69,7 +80,8 @@ public class OrderController {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "cannot order your own product");
         }
         p.decrementStock(req.quantity());
-        Order saved = orders.save(new Order(me.userId(), p.getId(), req.quantity(), p.getPriceCents()));
+        Order saved = orders.save(new Order(me.userId(), p.getId(), req.quantity(), p.getPriceCents(),
+                (idemKey == null || idemKey.isBlank()) ? null : idemKey));
         audit.info("order.placed buyerId={} productId={} qty={} orderId={}",
                 me.userId(), p.getId(), req.quantity(), saved.getId());
         events.publishEvent(new OrderPlacedEvent(saved.getId(), me.userId(), p.getId(),
@@ -86,6 +98,31 @@ public class OrderController {
         int boundedSize = Math.max(1, Math.min(size, MAX_PAGE_SIZE));
         Page<Order> pageData = orders.findByBuyerIdOrderByCreatedAtDesc(
                 me.userId(), PageRequest.of(page, boundedSize, Sort.by(Sort.Direction.DESC, "createdAt")));
+        return Map.of(
+                "page", pageData.getNumber(),
+                "size", pageData.getSize(),
+                "totalElements", pageData.getTotalElements(),
+                "totalPages", pageData.getTotalPages(),
+                "content", pageData.getContent().stream().map(OrderView::of).toList()
+        );
+    }
+
+    @GetMapping("/seller")
+    public Map<String, Object> sellerOrders(@AuthenticationPrincipal AuthPrincipal me,
+                                            @RequestParam(name = "page", defaultValue = "0") int page,
+                                            @RequestParam(name = "size", defaultValue = "20") int size) {
+        if (me == null || me.role() != Role.SELLER) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "seller role required");
+        }
+        if (page < 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "page must be >= 0");
+        int boundedSize = Math.max(1, Math.min(size, MAX_PAGE_SIZE));
+        List<Long> myProductIds = products.findBySellerId(me.userId()).stream().map(Product::getId).toList();
+        if (myProductIds.isEmpty()) {
+            return Map.of("page", 0, "size", boundedSize, "totalElements", 0L,
+                    "totalPages", 0, "content", List.of());
+        }
+        Page<Order> pageData = orders.findByProductIdInOrderByCreatedAtDesc(
+                myProductIds, PageRequest.of(page, boundedSize, Sort.by(Sort.Direction.DESC, "createdAt")));
         return Map.of(
                 "page", pageData.getNumber(),
                 "size", pageData.getSize(),

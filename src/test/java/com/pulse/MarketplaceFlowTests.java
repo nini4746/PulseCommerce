@@ -267,6 +267,136 @@ class MarketplaceFlowTests {
 
 
     @Test
+    void seller_can_update_own_product_price_and_stock() throws Exception {
+        String seller = signupAndLogin("sellerU@x.com", "passpass1", "SELLER");
+        long pid = createProduct(seller, "Item", 100, 5);
+        mvc.perform(patch("/products/" + pid)
+                        .header("Authorization", "Bearer " + seller)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"priceCents\":250,\"stock\":7}"))
+                .andExpect(status().isOk());
+        JsonNode p = om.readTree(mvc.perform(get("/products/" + pid))
+                .andReturn().getResponse().getContentAsString());
+        assertEquals(250, p.get("priceCents").asLong());
+        assertEquals(7, p.get("stock").asInt());
+    }
+
+    @Test
+    void other_seller_cannot_update_product() throws Exception {
+        String s1 = signupAndLogin("seller_a@x.com", "passpass1", "SELLER");
+        String s2 = signupAndLogin("seller_b@x.com", "passpass1", "BUYER");
+        long pid = createProduct(s1, "X", 100, 1);
+        mvc.perform(patch("/products/" + pid)
+                        .header("Authorization", "Bearer " + s2)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"priceCents\":1}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void seller_can_delete_own_product_admin_can_delete_any() throws Exception {
+        String seller = signupAndLogin("sellerD@x.com", "passpass1", "SELLER");
+        long pid = createProduct(seller, "Trash", 100, 1);
+        mvc.perform(delete("/products/" + pid).header("Authorization", "Bearer " + seller))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/products/" + pid)).andExpect(status().isNotFound());
+
+        long pid2 = createProduct(seller, "Trash2", 100, 1);
+        String admin = adminToken();
+        mvc.perform(delete("/products/" + pid2).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void seller_mine_lists_own_products_only() throws Exception {
+        String s1 = signupAndLogin("sellerM1@x.com", "passpass1", "SELLER");
+        String s2 = signupAndLogin("sellerM2@x.com", "passpass1", "SELLER");
+        createProduct(s1, "A", 100, 1);
+        createProduct(s1, "B", 100, 1);
+        createProduct(s2, "C", 100, 1);
+        MvcResult r = mvc.perform(get("/products/mine").header("Authorization", "Bearer " + s1))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode arr = om.readTree(r.getResponse().getContentAsString());
+        assertEquals(2, arr.size());
+    }
+
+    @Test
+    void seller_orders_lists_orders_for_own_products() throws Exception {
+        String seller = signupAndLogin("sellerSO@x.com", "passpass1", "SELLER");
+        String buyer = signupAndLogin("buyerSO@x.com", "passpass1", "BUYER");
+        long pid = createProduct(seller, "K", 100, 5);
+        for (int i = 0; i < 3; i++) {
+            mvc.perform(post("/orders").header("Authorization", "Bearer " + buyer)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"productId\":" + pid + ",\"quantity\":1}"))
+                    .andExpect(status().isCreated());
+        }
+        MvcResult r = mvc.perform(get("/orders/seller").header("Authorization", "Bearer " + seller))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode body = om.readTree(r.getResponse().getContentAsString());
+        assertEquals(3, body.get("totalElements").asLong());
+    }
+
+    @Test
+    void idempotency_key_returns_same_order_no_double_charge() throws Exception {
+        String seller = signupAndLogin("sellerI@x.com", "passpass1", "SELLER");
+        String buyer = signupAndLogin("buyerI@x.com", "passpass1", "BUYER");
+        long pid = createProduct(seller, "I", 100, 5);
+        String key = "abc-123";
+        MvcResult r1 = mvc.perform(post("/orders")
+                        .header("Authorization", "Bearer " + buyer)
+                        .header("Idempotency-Key", key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":" + pid + ",\"quantity\":1}"))
+                .andExpect(status().isCreated()).andReturn();
+        long oid1 = om.readTree(r1.getResponse().getContentAsString()).get("id").asLong();
+
+        MvcResult r2 = mvc.perform(post("/orders")
+                        .header("Authorization", "Bearer " + buyer)
+                        .header("Idempotency-Key", key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"productId\":" + pid + ",\"quantity\":1}"))
+                .andExpect(status().isOk()).andReturn();
+        long oid2 = om.readTree(r2.getResponse().getContentAsString()).get("id").asLong();
+        assertEquals(oid1, oid2);
+
+        long stockAfter = om.readTree(mvc.perform(get("/products/" + pid)).andReturn()
+                .getResponse().getContentAsString()).get("stock").asLong();
+        assertEquals(4, stockAfter);
+    }
+
+    @Test
+    void admin_can_unsuspend_and_seller_can_login_again() throws Exception {
+        String sellerToken = signupAndLogin("sellerUnsus@x.com", "passpass1", "SELLER");
+        long pid = createProduct(sellerToken, "X", 100, 1);
+        long sellerId = om.readTree(mvc.perform(get("/products/" + pid)).andReturn()
+                .getResponse().getContentAsString()).get("sellerId").asLong();
+        String admin = adminToken();
+        mvc.perform(post("/admin/sellers/" + sellerId + "/suspend")
+                .header("Authorization", "Bearer " + admin)).andExpect(status().isOk());
+        mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"sellerUnsus@x.com\",\"password\":\"passpass1\"}"))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/admin/sellers/" + sellerId + "/unsuspend")
+                .header("Authorization", "Bearer " + admin)).andExpect(status().isOk());
+        mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"sellerUnsus@x.com\",\"password\":\"passpass1\"}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void admin_lists_sellers() throws Exception {
+        signupAndLogin("listme1@x.com", "passpass1", "SELLER");
+        signupAndLogin("listme2@x.com", "passpass1", "SELLER");
+        signupAndLogin("listme3@x.com", "passpass1", "BUYER");
+        String admin = adminToken();
+        MvcResult r = mvc.perform(get("/admin/sellers").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode arr = om.readTree(r.getResponse().getContentAsString());
+        assertEquals(2, arr.size());
+    }
+
+    @Test
     void other_buyer_cannot_cancel() throws Exception {
         String seller = signupAndLogin("seller7@x.com", "passpass1", "SELLER");
         String buyer1 = signupAndLogin("buyer7a@x.com", "passpass1", "BUYER");

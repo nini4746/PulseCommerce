@@ -36,4 +36,5 @@ public class User {
     public Role getRole() { return role; }
     public boolean isSuspended() { return suspended; }
     public void suspend() { this.suspended = true; }
+    public void unsuspend() { this.suspended = false; }
 }

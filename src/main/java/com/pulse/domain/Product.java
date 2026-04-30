@@ -40,6 +40,23 @@ public class Product {
     public int getStock() { return stock; }
     public Long getSellerId() { return sellerId; }
 
+    public void rename(String newName) {
+        if (newName == null || newName.isBlank()) {
+            throw new IllegalArgumentException("name must not be blank");
+        }
+        this.name = newName;
+    }
+
+    public void changePrice(long newPriceCents) {
+        if (newPriceCents < 0) throw new IllegalArgumentException("price must be >= 0");
+        this.priceCents = newPriceCents;
+    }
+
+    public void setStock(int newStock) {
+        if (newStock < 0) throw new IllegalArgumentException("stock must be >= 0");
+        this.stock = newStock;
+    }
+
     public void decrementStock(int qty) {
         if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
         if (stock < qty) throw new InsufficientStockException("insufficient stock");
