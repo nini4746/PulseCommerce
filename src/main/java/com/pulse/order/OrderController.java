@@ -1,8 +1,10 @@
 package com.pulse.order;
 
+import com.pulse.domain.CancelReason;
 import com.pulse.domain.Order;
 import com.pulse.domain.OrderStatus;
 import com.pulse.domain.Product;
+import com.pulse.domain.RefundStatus;
 import com.pulse.domain.Role;
 import com.pulse.event.OrderCancelledEvent;
 import com.pulse.event.OrderPlacedEvent;
@@ -49,11 +51,19 @@ public class OrderController {
 
     public record PlaceRequest(@Min(1) Long productId, @Min(1) int quantity) {}
 
+    public record CancelRequest(String reason, String note) {}
+
+    public record RefundRequest(String action) {}
+
     public record OrderView(Long id, Long buyerId, Long productId, int quantity,
-                            long unitPriceCents, long totalCents, OrderStatus status, Instant createdAt) {
+                            long unitPriceCents, long totalCents, OrderStatus status,
+                            CancelReason cancelReason, String cancelNote, RefundStatus refundStatus,
+                            Instant createdAt) {
         static OrderView of(Order o) {
             return new OrderView(o.getId(), o.getBuyerId(), o.getProductId(), o.getQuantity(),
-                    o.getUnitPriceCents(), o.totalCents(), o.getStatus(), o.getCreatedAt());
+                    o.getUnitPriceCents(), o.totalCents(), o.getStatus(),
+                    o.getCancelReason(), o.getCancelNote(), o.getRefundStatus(),
+                    o.getCreatedAt());
         }
     }
 
@@ -134,19 +144,55 @@ public class OrderController {
 
     @PostMapping("/{id}/cancel")
     @Transactional
-    public OrderView cancel(@AuthenticationPrincipal AuthPrincipal me, @PathVariable Long id) {
+    public OrderView cancel(@AuthenticationPrincipal AuthPrincipal me,
+                            @PathVariable Long id,
+                            @RequestBody(required = false) CancelRequest req) {
         if (me == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         Order o = orders.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "order not found"));
         if (!o.getBuyerId().equals(me.userId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "not your order");
         }
-        o.cancel();
+        CancelReason reason = parseReason(req == null ? null : req.reason());
+        String note = req == null ? null : req.note();
+        if (note != null && note.length() > 255) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "note too long (max 255)");
+        }
+        o.cancel(reason, note);
         products.findById(o.getProductId()).ifPresent(p -> p.restock(o.getQuantity()));
-        audit.info("order.cancelled buyerId={} orderId={} productId={} qty={}",
-                me.userId(), o.getId(), o.getProductId(), o.getQuantity());
+        audit.info("order.cancelled buyerId={} orderId={} productId={} qty={} reason={} refund={}",
+                me.userId(), o.getId(), o.getProductId(), o.getQuantity(),
+                o.getCancelReason(), o.getRefundStatus());
         events.publishEvent(new OrderCancelledEvent(o.getId(), me.userId(), o.getProductId(),
                 o.getQuantity(), Instant.now()));
+        return OrderView.of(o);
+    }
+
+    @PostMapping("/{id}/refund")
+    @Transactional
+    public OrderView refund(@AuthenticationPrincipal AuthPrincipal me,
+                            @PathVariable Long id,
+                            @RequestBody(required = false) RefundRequest req) {
+        if (me == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+        Order o = orders.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "order not found"));
+        Product p = products.findById(o.getProductId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "product not found"));
+        boolean isAdmin = me.role() == Role.ADMIN;
+        boolean isSellerOfProduct = me.role() == Role.SELLER && p.getSellerId().equals(me.userId());
+        if (!isAdmin && !isSellerOfProduct) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "seller of product or admin required");
+        }
+        String action = (req == null || req.action() == null) ? "" : req.action().toUpperCase();
+        switch (action) {
+            case "APPROVE" -> o.approveRefund();
+            case "REJECT" -> o.rejectRefund();
+            case "REFUND" -> o.completeRefund();
+            default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "action must be APPROVE, REJECT, or REFUND");
+        }
+        audit.info("order.refund actorId={} role={} orderId={} action={} status={}",
+                me.userId(), me.role(), o.getId(), action, o.getRefundStatus());
         return OrderView.of(o);
     }
 
@@ -200,5 +246,14 @@ public class OrderController {
         o.markDelivered();
         audit.info("order.delivered sellerId={} orderId={}", me.userId(), o.getId());
         return OrderView.of(o);
+    }
+
+    private static CancelReason parseReason(String s) {
+        if (s == null || s.isBlank()) return CancelReason.OTHER;
+        try {
+            return CancelReason.valueOf(s.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid cancel reason: " + s);
+        }
     }
 }
