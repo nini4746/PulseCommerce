@@ -5,11 +5,11 @@ Spring Boot 3.3 기반 마켓플레이스 MVP. 원 명세(395줄)는 마이크�
 ## MVP 범위
 
 - **역할**: BUYER / SELLER / ADMIN
-- **인증**: JWT(HS256) 액세스(15분) + 서버 저장 리프레시 토큰(rotation, revoke), BCrypt 비밀번호, 로그인 IP 토큰버킷 레이트리밋(429), `/auth/refresh`·`/auth/logout`
+- **인증**: JWT(HS256) 액세스(15분) + 서버 저장 리프레시 토큰(rotation, revoke, **재사용 탐지 시 체인 전체 무효화**), BCrypt 비밀번호, 로그인 IP 토큰버킷 레이트리밋(429), `/auth/refresh`·`/auth/logout`. 만료 토큰 정리 잡(`@Scheduled` 일 1회 03:30, `pulse.refresh.cleanup-cron`).
 - **상품**: 등록(SELLER), 조회(공개), 본인 상품 수정·삭제(SELLER), 강제 삭제(ADMIN), 본인 상품 목록(`/products/mine`)
 - **주문**: 생성(BUYER, 자기 상품 차단), 본인 주문 목록, 본인 주문 취소(재고 환원, 사유 코드), `Idempotency-Key` 멱등 처리, 상태머신(PLACED→PAID→SHIPPED→DELIVERED), 셀러 자기 상품 주문 조회(`/orders/seller`)
-- **클레임/환불**: 취소 사유 enum(`CancelReason`), 환불 상태머신(NONE/REQUESTED/APPROVED/REJECTED/REFUNDED), `/orders/{id}/refund` (셀러 본인 상품 또는 ADMIN — APPROVE/REJECT/REFUND)
-- **셀러 KPI**: `/seller/kpi` — 본인 상품 기준 GMV(취소 제외 매출 합), 주문수, 취소수, 취소율
+- **클레임/환불**: 취소 사유 enum(`CancelReason`), 환불 상태머신(NONE/REQUESTED/APPROVED/REJECTED/REFUNDED), `/orders/{id}/refund` (셀러 본인 상품 또는 ADMIN — APPROVE/REJECT/REFUND), **`Idempotency-Key` 멱등키 헤더로 동일 응답 캐시(DB 유니크)**. 분쟁 메시지 스레드: `/orders/{id}/dispute/messages` GET/POST (buyer↔seller, ADMIN은 읽기 전용)
+- **셀러 KPI**: `/seller/kpi?from=...&to=...` (ISO-8601, 기본 last-30d) — 본인 상품 기준 GMV(취소 제외 매출 합), 주문수, 취소수, 취소율
 - **관리자**: 판매자 목록(`/admin/sellers`), 정지/해제, 정지된 계정 로그인 거부
 - **도메인 이벤트**: `OrderPlacedEvent`, `OrderCancelledEvent` 발행
 - **관측**: JSON 콘솔 로깅, 모든 응답에 `X-Request-Id` 발급/전파, Prometheus(`/actuator/prometheus`), OpenTelemetry 트레이싱 브릿지
@@ -22,7 +22,7 @@ Spring Boot 3.3 기반 마켓플레이스 MVP. 원 명세(395줄)는 마이크�
 
 ```bash
 # Java 17 필요. Maven 미설치 시 동봉된 ./mvnw 사용 가능.
-./mvnw test               # 38건 통합 테스트 실행
+./mvnw test               # 50건 통합 테스트 실행
 ./mvnw spring-boot:run    # 8080에서 실행, 데이터는 ./data/pulse 에 H2 파일 DB
 # (전역 mvn 설치된 경우) mvn test / mvn spring-boot:run 도 동일하게 동작
 ```
@@ -100,17 +100,31 @@ curl -X POST localhost:8080/orders/1/refund -H "Authorization: Bearer $TOKEN_S" 
 curl -X POST localhost:8080/orders/1/refund -H "Authorization: Bearer $TOKEN_S" \
   -H 'content-type: application/json' -d '{"action":"REFUND"}'   # APPROVED→REFUNDED
 # 또는 REJECT (REQUESTED→REJECTED)
+# 멱등키: 같은 키 재호출 시 캐시된 응답 반환
+curl -X POST localhost:8080/orders/1/refund -H "Authorization: Bearer $TOKEN_S" \
+  -H 'content-type: application/json' -H 'Idempotency-Key: refund-2026-04-30-001' \
+  -d '{"action":"APPROVE"}'
+
+# 12) KPI 시간 윈도우(ISO-8601)
+curl "localhost:8080/seller/kpi?from=2026-04-01T00:00:00Z&to=2026-05-01T00:00:00Z" \
+  -H "Authorization: Bearer $TOKEN_S"
+
+# 13) 분쟁 메시지 스레드(buyer ↔ seller, admin 읽기 전용)
+curl -X POST localhost:8080/orders/1/dispute/messages -H "Authorization: Bearer $TOKEN_B" \
+  -H 'content-type: application/json' -d '{"body":"item arrived broken"}'
+curl localhost:8080/orders/1/dispute/messages -H "Authorization: Bearer $TOKEN_S"
 ```
 
 ## 테스트 결과
 
-`./mvnw test` 전체 38건 0실패. 주요 시나리오:
+`./mvnw test` 전체 50건 0실패. 주요 시나리오:
 
 - 인증/권한: signup·login·role 차단(BUYER/SELLER/ADMIN), 정지 계정 로그인 거부, 로그인 레이트리밋(429)
-- 리프레시 토큰: rotation(이전 토큰 즉시 무효화), 잘못된 토큰 401, 로그아웃 후 모든 리프레시 무효화
+- 리프레시 토큰: rotation(이전 토큰 즉시 무효화), 잘못된 토큰 401, 로그아웃 후 모든 리프레시 무효화, **재사용 탐지(이미 revoke된 토큰 재제시 시 사용자 체인 전체 무효화)**, 만료 토큰 정리 잡 수동 트리거
 - 상품: 등록(SELLER 전용), 본인 상품 수정·삭제, 다른 셀러 차단(403), 셀러별 목록 분리, ADMIN 강제 삭제
 - 주문: 생성·재고 차감·자기상품 차단·페이지네이션·취소·재고 환원, 멱등키 중복 방지, 동시성 oversell 방지(낙관적 잠금→409), 상태머신(pay/ship/deliver) 전이 검증, 다른 셀러 ship 차단
-- 클레임/환불: 사유 코드 기록, 결제완료 취소 시 REQUESTED 자동 생성, 셀러 APPROVE→REFUND·REJECT 흐름, 다른 셀러 차단(403), 잘못된 사유 400, ADMIN 강제 환불
-- 셀러 KPI: 본인 상품 기준 GMV(취소 제외) / 주문수 / 취소율 집계, 타 셀러 격리, 빈 상태(0) 처리
+- 클레임/환불: 사유 코드 기록, 결제완료 취소 시 REQUESTED 자동 생성, 셀러 APPROVE→REFUND·REJECT 흐름, 다른 셀러 차단(403), 잘못된 사유 400, ADMIN 강제 환불, **환불 멱등키 캐시·다른 주문 키 충돌 409**
+- 분쟁 스레드: buyer↔seller 게시·읽기, ADMIN 읽기 가능·게시 금지(403), 외부 buyer/seller 차단(403), 빈 본문 400
+- 셀러 KPI: 본인 상품 기준 GMV(취소 제외) / 주문수 / 취소율 집계, 타 셀러 격리, 빈 상태(0) 처리, **시간 윈도우(`from`/`to`) 필터·잘못된 날짜 400**
 - 관리자: 셀러 목록·정지·해제, 정지 후 재로그인 가능 검증
 - 이벤트: OrderPlaced/OrderCancelled 발행 캡처
