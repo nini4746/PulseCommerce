@@ -1,15 +1,19 @@
 package com.pulse.auth;
 
+import com.pulse.domain.RefreshToken;
 import com.pulse.domain.Role;
 import com.pulse.domain.User;
 import com.pulse.repo.UserRepository;
+import com.pulse.security.AuthPrincipal;
 import com.pulse.security.JwtService;
+import com.pulse.security.RefreshTokenService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -17,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestController
@@ -26,11 +31,14 @@ public class AuthController {
     private final UserRepository users;
     private final PasswordEncoder encoder;
     private final JwtService jwt;
+    private final RefreshTokenService refresh;
 
-    public AuthController(UserRepository users, PasswordEncoder encoder, JwtService jwt) {
+    public AuthController(UserRepository users, PasswordEncoder encoder,
+                          JwtService jwt, RefreshTokenService refresh) {
         this.users = users;
         this.encoder = encoder;
         this.jwt = jwt;
+        this.refresh = refresh;
     }
 
     public record SignupRequest(
@@ -40,6 +48,8 @@ public class AuthController {
     ) {}
 
     public record LoginRequest(@Email @NotBlank String email, @NotBlank String password) {}
+
+    public record RefreshRequest(@NotBlank String refreshToken) {}
 
     @PostMapping("/signup")
     public ResponseEntity<Map<String, Object>> signup(@Valid @RequestBody SignupRequest req) {
@@ -73,6 +83,40 @@ public class AuthController {
         if (u.isSuspended()) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "account suspended");
         }
-        return Map.of("token", jwt.issue(u), "role", u.getRole().name(), "userId", u.getId());
+        return tokenResponse(u);
+    }
+
+    @PostMapping("/refresh")
+    public Map<String, Object> refresh(@Valid @RequestBody RefreshRequest req) {
+        RefreshToken rt = refresh.consume(req.refreshToken())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid refresh token"));
+        User u = users.findById(rt.getUserId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "user not found"));
+        if (u.isSuspended()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "account suspended");
+        }
+        return tokenResponse(u);
+    }
+
+    @PostMapping("/logout")
+    public Map<String, Object> logout(@AuthenticationPrincipal AuthPrincipal me) {
+        if (me == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "auth required");
+        }
+        int revoked = refresh.revokeAllForUser(me.userId());
+        return Map.of("revoked", revoked);
+    }
+
+    private Map<String, Object> tokenResponse(User u) {
+        String access = jwt.issue(u);
+        RefreshTokenService.Issued issued = refresh.issue(u.getId());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("token", access); // back-compat alias
+        body.put("accessToken", access);
+        body.put("refreshToken", issued.token());
+        body.put("refreshTokenExpiresAt", issued.expiresAt().toString());
+        body.put("role", u.getRole().name());
+        body.put("userId", u.getId());
+        return body;
     }
 }

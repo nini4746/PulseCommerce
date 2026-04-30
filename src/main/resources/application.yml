@@ -34,7 +34,9 @@ logging:
 pulse:
   jwt:
     secret: ${JWT_SECRET:}
-    ttl-ms: ${JWT_TTL_MS:3600000}
+    ttl-ms: ${JWT_TTL_MS:900000}
+  refresh:
+    ttl-ms: ${REFRESH_TTL_MS:1209600000}
   admin:
     email: ${ADMIN_EMAIL:admin@pulse.local}
     password: ${ADMIN_PASSWORD:}

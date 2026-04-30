@@ -22,7 +22,7 @@ public class JwtService {
     private final long ttlMillis;
 
     public JwtService(@Value("${pulse.jwt.secret:}") String secret,
-                      @Value("${pulse.jwt.ttl-ms:3600000}") long ttlMillis) {
+                      @Value("${pulse.jwt.ttl-ms:900000}") long ttlMillis) {
         if (secret == null || secret.isBlank()) {
             throw new IllegalStateException(
                     "pulse.jwt.secret (JWT_SECRET) is not set; refusing to start without an explicit JWT secret");
