@@ -1,15 +1,19 @@
 package com.pulse.order;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pulse.domain.CancelReason;
 import com.pulse.domain.Order;
 import com.pulse.domain.OrderStatus;
 import com.pulse.domain.Product;
+import com.pulse.domain.RefundIdempotency;
 import com.pulse.domain.RefundStatus;
 import com.pulse.domain.Role;
 import com.pulse.event.OrderCancelledEvent;
 import com.pulse.event.OrderPlacedEvent;
 import com.pulse.repo.OrderRepository;
 import com.pulse.repo.ProductRepository;
+import com.pulse.repo.RefundIdempotencyRepository;
 import com.pulse.security.AuthPrincipal;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.context.ApplicationEventPublisher;
@@ -41,12 +45,18 @@ public class OrderController {
     private final OrderRepository orders;
     private final ProductRepository products;
     private final ApplicationEventPublisher events;
+    private final RefundIdempotencyRepository refundIdem;
+    private final ObjectMapper json;
 
     public OrderController(OrderRepository orders, ProductRepository products,
-                           ApplicationEventPublisher events) {
+                           ApplicationEventPublisher events,
+                           RefundIdempotencyRepository refundIdem,
+                           ObjectMapper json) {
         this.orders = orders;
         this.products = products;
         this.events = events;
+        this.refundIdem = refundIdem;
+        this.json = json;
     }
 
     public record PlaceRequest(@Min(1) Long productId, @Min(1) int quantity) {}
@@ -172,8 +182,27 @@ public class OrderController {
     @Transactional
     public OrderView refund(@AuthenticationPrincipal AuthPrincipal me,
                             @PathVariable Long id,
+                            @RequestHeader(name = "Idempotency-Key", required = false) String idemKey,
                             @RequestBody(required = false) RefundRequest req) {
         if (me == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+        if (idemKey != null && !idemKey.isBlank()) {
+            if (idemKey.length() > 64) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key too long (max 64)");
+            }
+            var cached = refundIdem.findByActorIdAndIdempotencyKey(me.userId(), idemKey);
+            if (cached.isPresent()) {
+                if (!cached.get().getOrderId().equals(id)) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT,
+                            "Idempotency-Key already used for a different order");
+                }
+                try {
+                    return json.readValue(cached.get().getResponseJson(), OrderView.class);
+                } catch (JsonProcessingException e) {
+                    throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                            "cached idempotency response unreadable");
+                }
+            }
+        }
         Order o = orders.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "order not found"));
         Product p = products.findById(o.getProductId())
@@ -191,9 +220,21 @@ public class OrderController {
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "action must be APPROVE, REJECT, or REFUND");
         }
-        audit.info("order.refund actorId={} role={} orderId={} action={} status={}",
-                me.userId(), me.role(), o.getId(), action, o.getRefundStatus());
-        return OrderView.of(o);
+        audit.info("order.refund actorId={} role={} orderId={} action={} status={} idem={}",
+                me.userId(), me.role(), o.getId(), action, o.getRefundStatus(),
+                idemKey == null ? "-" : idemKey);
+        OrderView view = OrderView.of(o);
+        if (idemKey != null && !idemKey.isBlank()) {
+            try {
+                refundIdem.save(new RefundIdempotency(me.userId(), idemKey, o.getId(), json.writeValueAsString(view)));
+            } catch (JsonProcessingException e) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                        "failed to cache idempotency response");
+            } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                // Concurrent insert with same key — fall through; client retry will hit cache.
+            }
+        }
+        return view;
     }
 
     @PostMapping("/{id}/pay")

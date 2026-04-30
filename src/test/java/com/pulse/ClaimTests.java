@@ -199,6 +199,72 @@ class ClaimTests {
     }
 
     @Test
+    void refund_with_idempotency_key_returns_cached_response() throws Exception {
+        String seller = signupAndLogin("clmS8@x.com", "SELLER");
+        String buyer = signupAndLogin("clmB8@x.com", "BUYER");
+        long pid = createProduct(seller, "I", 100, 5);
+        long oid = placeOrder(buyer, pid, 1);
+        mvc.perform(post("/orders/" + oid + "/pay").header("Authorization", "Bearer " + buyer))
+                .andExpect(status().isOk());
+        mvc.perform(post("/orders/" + oid + "/cancel").header("Authorization", "Bearer " + buyer)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"OTHER\"}"))
+                .andExpect(status().isOk());
+
+        // First call: APPROVE with idem key
+        MvcResult r1 = mvc.perform(post("/orders/" + oid + "/refund")
+                .header("Authorization", "Bearer " + seller)
+                .header("Idempotency-Key", "refund-2026-04-30-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"action\":\"APPROVE\"}"))
+                .andExpect(status().isOk()).andReturn();
+        String body1 = r1.getResponse().getContentAsString();
+        assertEquals("APPROVED", om.readTree(body1).get("refundStatus").asText());
+
+        // Replay same key with DIFFERENT action: must return cached APPROVED, not transition
+        MvcResult r2 = mvc.perform(post("/orders/" + oid + "/refund")
+                .header("Authorization", "Bearer " + seller)
+                .header("Idempotency-Key", "refund-2026-04-30-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"action\":\"REFUND\"}"))
+                .andExpect(status().isOk()).andReturn();
+        assertEquals("APPROVED",
+                om.readTree(r2.getResponse().getContentAsString()).get("refundStatus").asText());
+    }
+
+    @Test
+    void refund_idempotency_key_collision_with_different_order_returns_409() throws Exception {
+        String seller = signupAndLogin("clmS9@x.com", "SELLER");
+        String buyer = signupAndLogin("clmB9@x.com", "BUYER");
+        long pid = createProduct(seller, "J", 100, 10);
+        long oid1 = placeOrder(buyer, pid, 1);
+        long oid2 = placeOrder(buyer, pid, 1);
+        mvc.perform(post("/orders/" + oid1 + "/pay").header("Authorization", "Bearer " + buyer))
+                .andExpect(status().isOk());
+        mvc.perform(post("/orders/" + oid1 + "/cancel").header("Authorization", "Bearer " + buyer)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"OTHER\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(post("/orders/" + oid2 + "/pay").header("Authorization", "Bearer " + buyer))
+                .andExpect(status().isOk());
+        mvc.perform(post("/orders/" + oid2 + "/cancel").header("Authorization", "Bearer " + buyer)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"OTHER\"}"))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/orders/" + oid1 + "/refund")
+                .header("Authorization", "Bearer " + seller)
+                .header("Idempotency-Key", "rfd-collide-1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"action\":\"APPROVE\"}"))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/orders/" + oid2 + "/refund")
+                .header("Authorization", "Bearer " + seller)
+                .header("Idempotency-Key", "rfd-collide-1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"action\":\"APPROVE\"}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
     void cancel_with_invalid_reason_400() throws Exception {
         String seller = signupAndLogin("clmS7@x.com", "SELLER");
         String buyer = signupAndLogin("clmB7@x.com", "BUYER");
