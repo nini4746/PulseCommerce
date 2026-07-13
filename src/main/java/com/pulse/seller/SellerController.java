@@ -58,12 +58,7 @@ public class SellerController {
             body.put("cancelRate", 0.0);
             return body;
         }
-        List<Order> ordersForSeller = orders.findByProductIdIn(productIds).stream()
-                .filter(o -> {
-                    Instant t = o.getCreatedAt();
-                    return !t.isBefore(from) && t.isBefore(to);
-                })
-                .toList();
+        List<Order> ordersForSeller = orders.findByProductIdInAndCreatedAtRange(productIds, from, to);
         long total = ordersForSeller.size();
         long cancelled = ordersForSeller.stream().filter(o -> o.getStatus() == OrderStatus.CANCELLED).count();
         long gmvCents = ordersForSeller.stream()

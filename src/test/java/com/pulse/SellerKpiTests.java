@@ -2,6 +2,8 @@ package com.pulse;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.pulse.domain.Order;
+import com.pulse.repo.OrderRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,10 +11,14 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
+
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
@@ -33,6 +39,7 @@ class SellerKpiTests {
 
     @Autowired private WebApplicationContext wac;
     @Autowired private ObjectMapper om;
+    @Autowired private OrderRepository orderRepository;
     private MockMvc mvc;
 
     @BeforeEach
@@ -152,6 +159,38 @@ class SellerKpiTests {
                 .andExpect(status().isOk()).andReturn();
         JsonNode b2 = om.readTree(r2.getResponse().getContentAsString());
         assertEquals(2L, b2.get("orderCount").asLong());
+    }
+
+    @Test
+    void kpi_window_filter_includes_only_orders_inside_range_when_mixed() throws Exception {
+        String seller = signupAndLogin("smix@x.com", "SELLER");
+        String buyer = signupAndLogin("bmix@x.com", "BUYER");
+        long pid = createProduct(seller, "PM", 1000, 10);
+
+        long insideOrderId = placeOrder(buyer, pid, 1);   // 1000, will land inside the window
+        long outsideOrderId = placeOrder(buyer, pid, 5);  // 5000, will be backdated outside the window
+
+        Instant now = Instant.now();
+        Instant from = now.minus(1, ChronoUnit.DAYS);
+        Instant to = now.plus(1, ChronoUnit.DAYS);
+
+        // Backdate one order to just before "from" so it must be excluded.
+        Order outside = orderRepository.findById(outsideOrderId).orElseThrow();
+        ReflectionTestUtils.setField(outside, "createdAt", from.minus(1, ChronoUnit.SECONDS));
+        orderRepository.save(outside);
+
+        // Keep the other order inside [from, to).
+        Order inside = orderRepository.findById(insideOrderId).orElseThrow();
+        ReflectionTestUtils.setField(inside, "createdAt", now);
+        orderRepository.save(inside);
+
+        MvcResult r = mvc.perform(get("/seller/kpi")
+                .param("from", from.toString()).param("to", to.toString())
+                .header("Authorization", "Bearer " + seller))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode body = om.readTree(r.getResponse().getContentAsString());
+        assertEquals(1L, body.get("orderCount").asLong());
+        assertEquals(1000L, body.get("gmvCents").asLong());
     }
 
     @Test
